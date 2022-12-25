@@ -31,6 +31,8 @@
 #include <thread>
 #include <vector>
 
+using namespace std::string_literals;
+
 class unique_fd final {
 public:
   unique_fd() : value_(-1) {}
@@ -257,146 +259,173 @@ std::vector<char> relocatedRead(int device_fd, Relocations const &relocations,
 } // namespace
 
 class Status {
-    int _errno;
-    std::string _message;
+  int _errno;
+  std::string _message;
+
 public:
-    Status(int err, const std::string& message)
-    : _errno(err), _message(message)
-    { }
+  Status(int err, const std::string &message)
+      : _errno(err), _message(message) {}
 
-    Status(const std::string& message)
-    : _errno(-1), _message(message)
-    { }
+  Status(const std::string &message) : _errno(-1), _message(message) {}
 
-    static Status ok() {
-        return { 0, "" };
-    }
+  static Status ok() { return {0, ""}; }
 
-    bool isOk() const {
-        return _errno == 0;
-    }
+  bool isOk() const { return _errno == 0; }
 
-    operator int() const {
-        return _errno;
-    }
+  operator int() const { return _errno; }
 };
 
 typedef Status error;
 
 class LogLine {
 public:
-    LogLine(const std::string& level)
-    {
-        std::cout << level << ": ";
-    }
+  LogLine(const std::string &level) { std::cout << level << ": "; }
 
-    ~LogLine() {
-        std::cout << std::endl;
-    }
+  ~LogLine() { std::cout << std::endl; }
 
-    template<typename T>
-    LogLine& operator <<(T&& value) {
-        std::cout << value;
-        return *this;
-    }
+  template <typename T> LogLine &operator<<(T &&value) {
+    std::cout << value;
+    return *this;
+  }
 };
 
 #define LOG(level) LogLine(#level)
 
-Status cp_restoreCheckpoint(const std::string& blockDevice, int restore_limit) {
-    bool validating = true;
-    std::string action = "Validating";
-    int restore_count = 0;
-    for (;;) {
-        Relocations relocations;
-        relocations[0] = 0;
-        Status status = Status::ok();
-        LOG(INFO) << action << " checkpoint on " << blockDevice;
-        unique_fd device_fd(open(blockDevice.c_str(), O_RDWR | O_CLOEXEC));
-        if (device_fd < 0) return error("Cannot open " + blockDevice);
-        log_sector_v1_0 original_ls;
-        read(device_fd, reinterpret_cast<char*>(&original_ls), sizeof(original_ls));
-        if (original_ls.magic == kPartialRestoreMagic) {
-            validating = false;
-            action = "Restoring";
-        } else if (original_ls.magic != kMagic) {
-            return error(EINVAL, "No magic");
-        }
-        LOG(INFO) << action << " " << original_ls.sequence << " log sectors";
-        for (int sequence = original_ls.sequence; sequence >= 0 && status.isOk(); sequence--) {
-            auto ls_buffer = relocatedRead(device_fd, relocations, validating, 0,
-                                           original_ls.block_size, original_ls.block_size);
-            log_sector_v1_0& ls = *reinterpret_cast<log_sector_v1_0*>(&ls_buffer[0]);
-            Used_Sectors used_sectors;
-            used_sectors[0] = false;
-            if (ls.magic != kMagic && (ls.magic != kPartialRestoreMagic || validating)) {
-                status = error(EINVAL, "No magic");
-                break;
-            }
-            if (ls.block_size != original_ls.block_size) {
-                status = error(EINVAL, "Block size mismatch");
-                break;
-            }
-            if ((int)ls.sequence != sequence) {
-                status = error(EINVAL, "Expecting log sector " + std::to_string(sequence) +
-                                           " but got " + std::to_string(ls.sequence));
-                break;
-            }
-            LOG(INFO) << action << " from log sector " << ls.sequence;
-            for (log_entry* le =
-                     reinterpret_cast<log_entry*>(&ls_buffer[ls.header_size]) + ls.count - 1;
-                 le >= reinterpret_cast<log_entry*>(&ls_buffer[ls.header_size]); --le) {
-                // This is very noisy - limit to DEBUG only
-                LOG(VERBOSE) << action << " " << le->size << " bytes from sector " << le->dest
-                             << " to " << le->source << " with checksum " << std::hex
-                             << le->checksum;
-                auto buffer = relocatedRead(device_fd, relocations, validating, le->dest, le->size,
-                                            ls.block_size);
-                uint32_t checksum = le->source / (ls.block_size / kSectorSize);
-                for (size_t i = 0; i < le->size; i += ls.block_size) {
-                    crc32(&buffer[i], ls.block_size, &checksum);
-                }
-                if (le->checksum && checksum != le->checksum) {
-                    status = error(EINVAL, "Checksums don't match");
-                    break;
-                }
-                if (validating) {
-                    relocate(relocations, le->source, le->dest, (le->size - 1) / kSectorSize + 1);
-                } else {
-                    restoreSector(device_fd, used_sectors, ls_buffer, le, buffer);
-                    restore_count++;
-                    if (restore_limit && restore_count >= restore_limit) {
-                        status = error(EAGAIN, "Hit the test limit");
-                        break;
-                    }
-                }
-            }
-        }
-        if (!status.isOk()) {
-            if (!validating) {
-                LOG(ERROR) << "Checkpoint restore failed even though checkpoint validation passed";
-                return status;
-            }
-            LOG(WARNING) << "Checkpoint validation failed - attempting to roll forward";
-            auto buffer = relocatedRead(device_fd, relocations, false, original_ls.sector0,
-                                        original_ls.block_size, original_ls.block_size);
-            lseek64(device_fd, 0, SEEK_SET);
-            write(device_fd, &buffer[0], original_ls.block_size);
-            return Status::ok();
-        }
-        if (!validating) break;
-        validating = false;
-        action = "Restoring";
+Status cp_restoreCheckpoint(const std::string &blockDevice, int restore_limit) {
+  bool validating = true;
+  std::string action = "Validating";
+  int restore_count = 0;
+  for (;;) {
+    Relocations relocations;
+    relocations[0] = 0;
+    Status status = Status::ok();
+    LOG(INFO) << action << " checkpoint on " << blockDevice;
+    unique_fd device_fd(open(blockDevice.c_str(), O_RDWR | O_CLOEXEC));
+    if (device_fd < 0)
+      return error("Cannot open " + blockDevice);
+    log_sector_v1_0 original_ls;
+    read(device_fd, reinterpret_cast<char *>(&original_ls),
+         sizeof(original_ls));
+    if (original_ls.magic == kPartialRestoreMagic) {
+      validating = false;
+      action = "Restoring";
+    } else if (original_ls.magic != kMagic) {
+      return error(EINVAL, "No magic");
     }
-    return Status::ok();
+    LOG(INFO) << action << " " << original_ls.sequence << " log sectors";
+    for (int sequence = original_ls.sequence; sequence >= 0 && status.isOk();
+         sequence--) {
+      auto ls_buffer =
+          relocatedRead(device_fd, relocations, validating, 0,
+                        original_ls.block_size, original_ls.block_size);
+      log_sector_v1_0 &ls = *reinterpret_cast<log_sector_v1_0 *>(&ls_buffer[0]);
+      Used_Sectors used_sectors;
+      used_sectors[0] = false;
+      if (ls.magic != kMagic &&
+          (ls.magic != kPartialRestoreMagic || validating)) {
+        status = error(EINVAL, "No magic");
+        break;
+      }
+      if (ls.block_size != original_ls.block_size) {
+        status = error(EINVAL, "Block size mismatch");
+        break;
+      }
+      if ((int)ls.sequence != sequence) {
+        status =
+            error(EINVAL, "Expecting log sector " + std::to_string(sequence) +
+                              " but got " + std::to_string(ls.sequence));
+        break;
+      }
+      LOG(INFO) << action << " from log sector " << ls.sequence;
+      for (log_entry *le =
+               reinterpret_cast<log_entry *>(&ls_buffer[ls.header_size]) +
+               ls.count - 1;
+           le >= reinterpret_cast<log_entry *>(&ls_buffer[ls.header_size]);
+           --le) {
+        // This is very noisy - limit to DEBUG only
+        LOG(VERBOSE) << action << " " << le->size << " bytes from sector "
+                     << le->dest << " to " << le->source << " with checksum "
+                     << std::hex << le->checksum;
+        auto buffer = relocatedRead(device_fd, relocations, validating,
+                                    le->dest, le->size, ls.block_size);
+        uint32_t checksum = le->source / (ls.block_size / kSectorSize);
+        for (size_t i = 0; i < le->size; i += ls.block_size) {
+          crc32(&buffer[i], ls.block_size, &checksum);
+        }
+        if (le->checksum && checksum != le->checksum) {
+          status = error(EINVAL, "Checksums don't match");
+          break;
+        }
+        if (validating) {
+          relocate(relocations, le->source, le->dest,
+                   (le->size - 1) / kSectorSize + 1);
+        } else {
+          restoreSector(device_fd, used_sectors, ls_buffer, le, buffer);
+          restore_count++;
+          if (restore_limit && restore_count >= restore_limit) {
+            status = error(EAGAIN, "Hit the test limit");
+            break;
+          }
+        }
+      }
+    }
+    if (!status.isOk()) {
+      if (!validating) {
+        LOG(ERROR) << "Checkpoint restore failed even though checkpoint "
+                      "validation passed";
+        return status;
+      }
+      LOG(WARNING)
+          << "Checkpoint validation failed - attempting to roll forward";
+      auto buffer =
+          relocatedRead(device_fd, relocations, false, original_ls.sector0,
+                        original_ls.block_size, original_ls.block_size);
+      lseek64(device_fd, 0, SEEK_SET);
+      write(device_fd, &buffer[0], original_ls.block_size);
+      return Status::ok();
+    }
+    if (!validating)
+      break;
+    validating = false;
+    action = "Restoring";
+  }
+  return Status::ok();
 }
 
-int main(int argc, char *argv[]) 
+void print_usage(const char* prog) {
+  LOG(USAGE) << prog << " rollback /dev/block/...";
+  LOG(USAGE) << prog << " fstrim /mnt/...";
+}
+
+int fstrim(const char* mnt)
 {
-    if (argc != 3) {
-        LOG(USAGE) << argv[0] << " /dev/block/... 0";
-        return -1;
-    }
-    auto status = cp_restoreCheckpoint(argv[1], std::stoi(argv[2]));
-    return status;
+  unique_fd fd(open(mnt, O_CLOEXEC | O_RDONLY));
+  if (fd == -1) {
+    LOG(ERROR) << "Failed to open mount point " << mnt << ". " << strerror(errno);
+    return -1;
+  }
+  fstrim_range range{};
+  range.len = ULLONG_MAX;
+  if (ioctl(fd, FITRIM, &range) != 0) {
+    LOG(ERROR) << "Failed to trim " << mnt;
+    return -1;
+  }
+  return 0;
+}
+
+int main(int argc, char *argv[]) {
+  if (argc != 3) {
+    print_usage(argv[0]);
+    return -1;
+  }
+
+  if ("rollback"s == argv[1]) {
+    return cp_restoreCheckpoint(argv[2], 0);
+
+  } else if ("fstrim"s == argv[1]) {
+    return fstrim(argv[2]);
+
+  } else {
+    print_usage(argv[0]);
+  }
 }
